@@ -5,6 +5,8 @@ mod light;
 mod material;
 mod cube;
 mod plane;
+mod texture;
+mod cube_tex;
 
 use raylib::prelude::{Color, Vector3, KeyboardKey, MouseButton, TraceLogLevel};
 use framebuffer::Framebuffer;
@@ -14,7 +16,8 @@ use light::Light;
 use material::{Material, vector3_to_color};
 use cube::Cube;
 use plane::Plane;
-
+use texture::Texture;
+use cube_tex::TexturedCube;
 use std::f32::consts::PI;
 
 fn procedural_sky(dir: Vector3) -> Vector3 {
@@ -118,22 +121,23 @@ fn main() {
     );
     let rotation_speed = std::f32::consts::PI / 100.0;
 
-    // cubo rojo
-    let red_lambert = Material::new(
-        Vector3::new(0.9, 0.1, 0.1),
+    // textura + cubo texturizado (Lambert)
+    let tex = Texture::from_file("assets/amethyst_cube.png");
+
+    let mat = Material::new(
+        Vector3::new(1.0, 1.0, 1.0), // será reemplazado por la textura
         0.0,
         [1.0, 0.0, 0.0, 0.0],
         0.0,
     );
 
-    // cubo tamaño 2
-    let cube = Cube::new(
+    let cube = TexturedCube::new(
         Vector3::new(-1.0, -1.0, -1.0),
         Vector3::new( 1.0,  1.0,  1.0),
-        red_lambert,
+        mat,
+        &tex,
     );
 
-    // solo difusa
     let objects: [&dyn RayIntersect; 1] = [&cube];
 
     let light = Light::new(

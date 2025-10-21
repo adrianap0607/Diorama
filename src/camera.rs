@@ -24,7 +24,7 @@ impl Camera {
     pub fn update_basis_vectors(&mut self) {
         self.forward = (self.center - self.eye).normalized();
         self.right = self.forward.cross(self.up).normalized();
-        self.up = self.right.cross(self.forward);
+        self.up = self.right.cross(self.forward).normalized();
     }
 
     pub fn orbit(&mut self, yaw: f32, pitch: f32) {

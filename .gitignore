@@ -1,1 +1,26 @@
-/target
+# Archivos de compilación y dependencias
+/target/
+Cargo.lock
+
+# Backups de Rust
+**/*.rs.bk
+
+# Archivos temporales del sistema
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Archivos de entornos de desarrollo
+.idea/
+.vscode/
+
+# Librerías/binaries compilados
+*.dll
+*.exe
+*.dylib
+*.so
+*.a
+
+# Logs
+*.log

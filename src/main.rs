@@ -20,6 +20,8 @@ use world::{build_grass_and_water, add_tree};
 use texture::Texture;
 use rayon::prelude::*;
 
+const WATER_TINT: (f32, f32, f32) = (0.3, 0.5, 1.0);
+
 fn procedural_sky(dir: Vector3) -> Vector3 {
     let t = 0.5 * (dir.y + 1.0);
     let sky_color    = Vector3::new(0.60, 0.80, 1.00);
@@ -36,6 +38,23 @@ fn mul_vec3(a: Vector3, b: Vector3) -> Vector3 {
     Vector3::new(a.x * b.x, a.y * b.y, a.z * b.z)
 }
 
+fn reflect(v: Vector3, n: Vector3) -> Vector3 { v - n * 2.0 * v.dot(n) }
+
+fn refract(v: Vector3, n: Vector3, ior: f32) -> Option<Vector3> {
+    let mut nrm = n;
+    let mut cosi = (-v.dot(nrm)).clamp(-1.0, 1.0);
+    let (etai, etat) = if cosi > 0.0 { (1.0, ior) } else { (ior, 1.0) };
+    if cosi < 0.0 { nrm = -nrm; cosi = -cosi; }
+    let eta = etai / etat;
+    let k = 1.0 - eta * eta * (1.0 - cosi * cosi);
+    if k < 0.0 { None } else { Some(v * eta + nrm * (eta * cosi - k.sqrt())) }
+}
+
+fn fresnel_schlick(cosi: f32, ior: f32) -> f32 {
+    let r0 = ((1.0 - ior) / (1.0 + ior)).powi(2);
+    r0 + (1.0 - r0) * (1.0 - cosi.abs()).powi(5)
+}
+
 fn cast_shadow(
     intersect: &Intersect,
     light: &Light,
@@ -49,7 +68,12 @@ fn cast_shadow(
     for obj in objects {
         let hit = obj.ray_intersect(&shadow_origin, &light_dir);
         if hit.is_intersecting && hit.distance < light_distance {
-            return 1.0;
+            if hit.material.alpha >= 0.85 {
+                return 1.0; 
+            } else {
+                return 0.4; 
+                
+            }
         }
     }
     0.0
@@ -61,45 +85,65 @@ fn cast_ray(
     objects: &[&dyn RayIntersect],
     light: &Light,
 ) -> Vector3 {
+    cast_ray_rr(ray_origin, ray_direction, objects, light, 4)
+}
+
+fn cast_ray_rr(
+    ray_origin: &Vector3,
+    ray_direction: &Vector3,
+    objects: &[&dyn RayIntersect],
+    light: &Light,
+    depth: i32,
+) -> Vector3 {
+    if depth <= 0 { return procedural_sky(*ray_direction); }
+
     let mut nearest = Intersect::empty();
     let mut z = f32::INFINITY;
-
     for obj in objects {
         let i = obj.ray_intersect(ray_origin, ray_direction);
-        if i.is_intersecting && i.distance < z {
-            z = i.distance;
-            nearest = i;
-        }
+        if i.is_intersecting && i.distance < z { z = i.distance; nearest = i; }
     }
-
-    if !nearest.is_intersecting {
-        return procedural_sky(*ray_direction);
-    }
+    if !nearest.is_intersecting { return procedural_sky(*ray_direction); }
 
     let l = (light.position - nearest.point).normalized();
     let ndotl = nearest.normal.dot(l).max(0.0);
-
     let shadow = cast_shadow(&nearest, light, objects);
 
-    let diffuse_intensity = ndotl * light.intensity * (1.0 - shadow);
-    let diffuse = nearest.material.diffuse * diffuse_intensity;
+    let kd = nearest.material.albedo[0];
+    let ks = nearest.material.albedo[1];
+    let kr = nearest.material.albedo[2];
+    let kt = nearest.material.albedo[3];
 
-    let hemi_strength = 0.3;
+    let diffuse = nearest.material.diffuse * (ndotl * light.intensity * (1.0 - shadow)) * kd;
+
+    let v = (-*ray_direction).normalized();
+    let h = (l + v).normalized();
+    let spec = ks * light.intensity * h.dot(nearest.normal).max(0.0).powf(nearest.material.specular);
+    let specular = Vector3::new(spec, spec, spec);
+
+    let hemi = 0.3;
     let up = nearest.normal.y.clamp(0.0, 1.0);
     let sky = Vector3::new(0.60, 0.80, 1.00);
     let ground = Vector3::new(0.30, 0.25, 0.20);
     let ambient_color = ground * (1.0 - up) + sky * up;
-    let ambient = mul_vec3(nearest.material.diffuse, ambient_color) * hemi_strength;
+    let ambient = mul_vec3(nearest.material.diffuse, ambient_color) * hemi * kd;
 
-    let base = diffuse + ambient;
+    let mut color = diffuse + ambient + specular;
+
+    if kr > 0.0 {
+        let rdir = reflect(*ray_direction, nearest.normal).normalized();
+        let ro = nearest.point + rdir * 1e-3;
+        let rc = cast_ray_rr(&ro, &rdir, objects, light, depth - 1);
+        color = color * (1.0 - kr) + rc * kr;
+    }
 
     if nearest.material.alpha < 1.0 {
         let behind_origin = nearest.point + *ray_direction * 1e-3;
-        let behind = cast_ray(&behind_origin, ray_direction, objects, light);
-        return over_rgb(base, behind, nearest.material.alpha);
+        let behind = cast_ray_rr(&behind_origin, ray_direction, objects, light, depth - 1);
+        return over_rgb(color, behind, nearest.material.alpha);
     }
 
-    base
+    color
 }
 
 fn render(framebuffer: &mut Framebuffer, objects: &[&dyn RayIntersect], camera: &Camera, light: &Light) {
@@ -115,7 +159,6 @@ fn render(framebuffer: &mut Framebuffer, objects: &[&dyn RayIntersect], camera: 
     // buffer para los píxeles
     let mut pixels = vec![Color::BLACK; w * h];
 
-    // render paralelo por filas
     pixels
         .par_chunks_mut(w)
         .enumerate()
@@ -135,7 +178,6 @@ fn render(framebuffer: &mut Framebuffer, objects: &[&dyn RayIntersect], camera: 
             }
         });
 
-    // copiar buffer al framebuffer (main thread)
     for y in 0..h {
         for x in 0..w {
             let idx = y * w + x;
@@ -169,8 +211,10 @@ fn main() {
     let tex_grass_side = Texture::from_file("assets/grass_side.png");
     let tex_grass_top  = Texture::from_file("assets/topgrass.jpeg");
     let tex_water      = Texture::from_file("assets/water.jpeg");
+    let water_tint = Vector3::new(0.3, 0.5, 1.0); // tono más azul
     let tex_trunk      = Texture::from_file("assets/tronco.jpeg");
     let tex_leaves     = Texture::from_file("assets/cherry_leaves.png");
+    let leaves_tint = Vector3::new(1.0, 0.6, 0.8);
     let tex_bedrock    = Texture::from_file("assets/bedrock.png");
 
     // construir escena base con estanque
@@ -186,8 +230,14 @@ fn main() {
     // árboles
     add_tree(&mut scene,  2.0,  0.0, &tex_trunk, &tex_leaves);
     add_tree(&mut scene,  0.0, -2.0, &tex_trunk, &tex_leaves);
+    scene.objects.iter_mut().for_each(|obj| {
+        if let crate::scene::Object::TexCube(c) = obj {
+            if c.tex as *const _ == &tex_leaves as *const _ {
+                c.material.diffuse = leaves_tint;
+            }
+        }
+    });
 
-    // referencias para render
     let obj_refs = scene.as_refs();
 
     let light = Light::new(
@@ -218,7 +268,6 @@ fn main() {
             camera.update_basis_vectors();
         }
 
-        // zoom con trackpad
         let wheel = window.get_mouse_wheel_move();
         if wheel.abs() > 0.0 {
             let zoom_sens: f32 = 0.6;
